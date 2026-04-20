@@ -294,10 +294,35 @@ class RunPodClient:
         *,
         timeout: float = 1800.0,
         poll_every: float = 10.0,
+        progress_every: float = 30.0,
+        stuck_start_timeout: float = 480.0,
     ) -> None:
-        """Block until the TEI server inside the pod responds 200 on /health."""
+        """Block until the TEI server inside the pod responds 200 on /health.
+
+        Emits a progress log every ``progress_every`` seconds so you can see
+        *something* while the container image + model weights are downloading
+        (cold starts on a fresh Blackwell pod are commonly 5–10 minutes).
+        Also polls RunPod's own pod-status API on every progress tick so we
+        can fail fast if the pod entered ``EXITED`` / ``FAILED`` / ``DEAD``
+        instead of waiting the full timeout for nothing.
+
+        Additionally, if RunPod reports ``desiredStatus=RUNNING`` but the
+        container's ``uptimeInSeconds`` is still ``<= 0`` (i.e. the host
+        accepted the pod but never actually started the container) for more
+        than ``stuck_start_timeout`` seconds, we bail with an error so the
+        outer retry loop can move on to a different GPU SKU instead of
+        burning the full ``timeout`` waiting for a host that's never going
+        to come up.
+        """
         start = time.time()
         last_err: Exception | None = None
+        last_progress = 0.0
+        last_pod_status: str | None = None
+        log.info(
+            "Waiting for pod %s to become healthy at %s "
+            "(timeout=%.0fs; cold starts can take 5–10 min)",
+            pod.pod_id, pod.health_url(), timeout,
+        )
         while time.time() - start < timeout:
             try:
                 r = requests.get(pod.health_url(), timeout=10)
@@ -310,6 +335,63 @@ class RunPodClient:
                 last_err = RuntimeError(f"health returned {r.status_code}")
             except requests.RequestException as exc:
                 last_err = exc
+
+            elapsed = time.time() - start
+            if elapsed - last_progress >= progress_every:
+                last_progress = elapsed
+                pod_status = "?"
+                try:
+                    info = self.get_pod(pod.pod_id) or {}
+                    pod_status = str(info.get("desiredStatus") or "?")
+                    runtime = info.get("runtime") or {}
+                    uptime = runtime.get("uptimeInSeconds")
+                except Exception as exc:  # noqa: BLE001
+                    uptime = None
+                    log.debug("get_pod(%s) failed: %s", pod.pod_id, exc)
+
+                log.info(
+                    "… still waiting on pod %s after %.0fs "
+                    "(runpod_status=%s, container_uptime=%ss, last_health_err=%s)",
+                    pod.pod_id, elapsed, pod_status,
+                    uptime if uptime is not None else "n/a",
+                    last_err,
+                )
+
+                # Bail early if RunPod itself says the pod is dead.
+                dead = {"EXITED", "FAILED", "DEAD", "TERMINATED"}
+                if pod_status.upper() in dead:
+                    raise RuntimeError(
+                        f"Pod {pod.pod_id} entered terminal status "
+                        f"{pod_status!r} before becoming healthy "
+                        f"(last health error: {last_err})"
+                    )
+                # Bail early if the host accepted the pod but never started
+                # the container (RUNNING + uptime<=0 for too long). This is
+                # the wedged-image-pull failure mode that otherwise eats
+                # the full timeout.
+                container_started = uptime is not None and uptime > 0
+                if (
+                    not container_started
+                    and elapsed >= stuck_start_timeout
+                    and pod_status.upper() == "RUNNING"
+                ):
+                    raise RuntimeError(
+                        f"Pod {pod.pod_id} on {pod.gpu_type_id!r} has been "
+                        f"in desiredStatus=RUNNING with no container "
+                        f"(uptimeInSeconds={uptime}, ports=null) for "
+                        f"{elapsed:.0f}s — host appears wedged on image "
+                        f"pull. Giving up so the next GPU SKU can be tried."
+                    )
+                if (
+                    last_pod_status is not None
+                    and pod_status != last_pod_status
+                ):
+                    log.info(
+                        "Pod %s status changed: %s -> %s",
+                        pod.pod_id, last_pod_status, pod_status,
+                    )
+                last_pod_status = pod_status
+
             time.sleep(poll_every)
         raise TimeoutError(
             f"Pod {pod.pod_id} did not become healthy in {timeout:.0f}s "

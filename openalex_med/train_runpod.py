@@ -246,10 +246,25 @@ def run(
         time.sleep(5)  # sshd settle
 
         # Push the worker script. Always create the workspace layout.
+        # The pytorch base image doesn't ship with rsync, so install it first
+        # — without it, rsync_to_pod fails with "rsync: command not found"
+        # because rsync invokes the remote rsync binary over the SSH transport.
         worker_local = Path(__file__).resolve().parent / "faiss_worker.py"
-        run_ssh(endpoint,
-                "mkdir -p /workspace/embeddings /workspace/index",
-                identity_file=identity)
+        run_ssh(
+            endpoint,
+            "set -e; "
+            "mkdir -p /workspace/embeddings /workspace/index; "
+            "if ! command -v rsync >/dev/null 2>&1; then "
+            "  echo 'installing rsync on pod...'; "
+            "  (apt-get update -qq && DEBIAN_FRONTEND=noninteractive "
+            "   apt-get install -y -qq rsync) "
+            "  || (apk add --no-cache rsync) "
+            "  || (yum install -y rsync) "
+            "  || { echo 'failed to install rsync via apt/apk/yum' >&2; exit 1; }; "
+            "fi; "
+            "rsync --version | head -n1",
+            identity_file=identity,
+        )
         rsync_to_pod(endpoint, str(worker_local),
                      "/workspace/faiss_worker.py", identity_file=identity)
 
