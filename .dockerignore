@@ -1,0 +1,16 @@
+# Don't bake the local embeddings or index into the build context — they
+# live in GCS and are mounted at runtime via Cloud Run volume mounts.
+embeddings_out/
+index_out/
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.venv/
+venv/
+.env
+.env.*
+node_modules/
+terminals/
+nohup.out
+*.log

@@ -1,0 +1,19 @@
+[Unit]
+Description=medgpt MCP server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=medgpt
+Group=medgpt
+WorkingDirectory=/opt/medgpt/app
+EnvironmentFile=-/etc/default/medgpt
+ExecStart=/opt/medgpt/venv/bin/python -m openalex_med.serve
+Restart=always
+RestartSec=5
+TimeoutStartSec=0
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

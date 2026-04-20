@@ -1,0 +1,15 @@
+# Pin only the load-bearing libs; let pip resolve the rest. CPU-only torch
+# is critical — the default torch wheel pulls 800 MB of CUDA we don't need.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
+torch==2.7.1+cpu
+sentence-transformers>=3.3,<5
+faiss-cpu==1.9.0
+numpy>=1.26,<2.3
+
+mcp>=1.2.0
+uvicorn[standard]>=0.30
+starlette>=0.40
+httpx[http2]>=0.27
+
+google-cloud-storage>=2.18

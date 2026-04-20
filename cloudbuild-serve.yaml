@@ -1,0 +1,23 @@
+steps:
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    id: fetch-index
+    entrypoint: bash
+    args:
+      - -lc
+      - >
+        set -euo pipefail &&
+        mkdir -p cloudrun_index &&
+        gcloud storage cp
+        "gs://medgpt-danbroz-com-index/openalex_medical.faiss"
+        "gs://medgpt-danbroz-com-index/openalex_medical.ids.npy"
+        "gs://medgpt-danbroz-com-index/openalex_medical.meta.json"
+        cloudrun_index/
+  - name: gcr.io/cloud-builders/docker
+    id: build-image
+    args:
+      - build
+      - -t
+      - ${_IMAGE}
+      - .
+images:
+  - ${_IMAGE}
